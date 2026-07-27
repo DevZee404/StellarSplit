@@ -15,6 +15,7 @@ const SUBJECT_MAP: Record<string, string> = {
   reminder: "Payment Reminder for StellarSplit",
   confirmation: "Payment Received Confirmation",
   completed: "Split Completed!",
+  archive_warning: "Your split will be archived in 7 days",
 };
 
 @Injectable()
@@ -125,6 +126,17 @@ export class EmailService implements OnModuleInit {
     await this.emailQueue.add("sendEmail", {
       to,
       type: "completed",
+      context,
+    });
+  }
+
+  async sendArchiveWarning(
+    to: string,
+    context: { splitDescription: string; archiveDate: string },
+  ) {
+    await this.emailQueue.add("sendEmail", {
+      to,
+      type: "archive_warning",
       context,
     });
   }
