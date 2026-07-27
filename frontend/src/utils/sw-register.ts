@@ -12,6 +12,13 @@ const SW_PATH = "/sw.js";
 let lastRegistration: ServiceWorkerRegistration | null = null;
 
 /**
+ * Guards against StrictMode's double effect-fire in development calling
+ * `registerServiceWorker()` twice, which would otherwise register the SW
+ * twice and log a console warning.
+ */
+let registered = false;
+
+/**
  * Fires when a new service worker is installed and an older one is still in control
  * (typical: new build waiting to activate).
  */
@@ -83,6 +90,9 @@ export async function registerServiceWorker(): Promise<void> {
     return;
   }
 
+  if (registered) return;
+  registered = true;
+
   store.setPhase("registering");
   store.setError(null);
   lastRegistration = null;
@@ -107,6 +117,7 @@ export async function registerServiceWorker(): Promise<void> {
       err instanceof Error
         ? err.message
         : "Service worker registration failed";
+    registered = false;
     store.setError(message);
     emitError(message, err);
   }
@@ -159,6 +170,7 @@ export async function forceRefreshWithCacheClear(): Promise<void> {
 
 export function __resetServiceWorkerTestStateForTests() {
   lastRegistration = null;
+  registered = false;
 }
 
 /** @internal Test-only: assign `lastRegistration` for apply / force-refresh tests. */
