@@ -215,6 +215,44 @@ fn test_fee_only_repayment_rejected() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_full_repayment_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+    let token_client = TokenClient::new(&env, &token_address);
+    let token_admin_client = TokenAdminClient::new(&env, &token_address);
+
+    let flash_loan_id = env.register_contract(None, FlashLoanContract);
+    let flash_loan_client = FlashLoanContractClient::new(&env, &flash_loan_id);
+    // 100 bp = 1% fee
+    flash_loan_client.initialize(&admin, &token_address, &100u32);
+
+    let receiver_id = env.register_contract(None, ReceiverContract);
+    let receiver_client = ReceiverContractClient::new(&env, &receiver_id);
+    receiver_client.set_flash_loan(&flash_loan_id, &token_address);
+
+    // Mint enough to the flash loan contract to cover the loan
+    token_admin_client.mint(&flash_loan_id, &10000);
+    // Mint enough to the receiver to cover the fee
+    token_admin_client.mint(&receiver_id, &1000);
+
+    let loan_amount: i128 = 500;
+    let fee: i128 = 5; // 1% of 500
+
+    let before_balance = token_client.balance(&flash_loan_id);
+    flash_loan_client.flash_loan(&receiver_id, &loan_amount, &Bytes::new(&env));
+    let after_balance = token_client.balance(&flash_loan_id);
+
+    // Contract should have gained exactly the fee
+    assert_eq!(after_balance - before_balance, fee);
+}
+
 // ============================================================
 // Property / invariant tests (proptest-style)
 // ============================================================

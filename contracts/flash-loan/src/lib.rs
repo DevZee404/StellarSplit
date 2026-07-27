@@ -57,9 +57,6 @@ impl FlashLoanContract {
         let token_client = token::Client::new(&env, &token_address);
         let contract_address = env.current_contract_address();
 
-        // Check balance before
-        let balance_before = token_client.balance(&contract_address);
-
         // Generate a unique loan ID
         let loan_id = Self::generate_loan_id(&env, &borrower);
         storage::set_loan(
@@ -72,6 +69,9 @@ impl FlashLoanContract {
                 repaid: false,
             },
         );
+
+        // Read contract balance before any transfer
+        let balance_before_disbursement = token_client.balance(&contract_address);
 
         // Transfer funds to borrower
         token_client.transfer(&contract_address, &borrower, &amount);
@@ -91,12 +91,20 @@ impl FlashLoanContract {
         // Check balance after
         let balance_after = token_client.balance(&contract_address);
 
-        if balance_after < balance_before {
-            return Err(Error::InsufficientRepayment);
-        }
-
-        let net_received = balance_after - (balance_before - amount);
-        if net_received < amount + fee {
+        // The contract must have the original pre-loan balance PLUS fee.
+        // balance_after must be >= balance_before_disbursement + fee.
+        // Since balance_before_disbursement already accounted for the amount
+        // being present (it hadn't been sent yet), we need:
+        //   balance_after >= balance_before_disbursement + fee
+        //
+        // Derivation:
+        //   Let B = balance_before_disbursement
+        //   After transfer out: B - amount
+        //   After callback repays R: B - amount + R
+        //   We require R >= amount + fee  (full principal + fee repaid)
+        //   So: balance_after = B - amount + R >= B - amount + (amount + fee) = B + fee
+        //   Therefore: balance_after >= B + fee
+        if balance_after < balance_before_disbursement + fee {
             return Err(Error::InsufficientRepayment);
         }
 
