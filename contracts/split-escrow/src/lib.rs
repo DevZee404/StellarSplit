@@ -13,6 +13,10 @@ pub use crate::errors::Error;
 pub use crate::types::{ParticipantBalance, Split, SplitStatus};
 
 const DEFAULT_MAX_PARTICIPANTS: u32 = 50;
+
+/// Mandatory delay between `schedule_unpause` and a successful `unpause` (48 hours).
+const UNPAUSE_TIMELOCK_SECONDS: u64 = 172_800;
+
 const MAX_NOTE_LEN: u32 = 128;
 const MAX_METADATA_ENTRIES: u32 = 32;
 const MAX_METADATA_STRING_LEN: u32 = 128;
@@ -58,6 +62,26 @@ fn is_active(status: &SplitStatus) -> bool {
     *status != SplitStatus::Released && *status != SplitStatus::Cancelled
 }
 
+/// Authenticate `admin` against the stored admin address.
+fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+    admin.require_auth();
+    if !storage::has_admin(env) {
+        return Err(Error::NotInitialized);
+    }
+    if *admin != storage::get_admin(env) {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Reject state-changing operations while the emergency freeze is active.
+fn require_not_paused(env: &Env) -> Result<(), Error> {
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+    Ok(())
+}
+
 #[contract]
 pub struct SplitEscrowContract;
 
@@ -98,6 +122,72 @@ impl SplitEscrowContract {
         storage::set_version(&env, &new_version);
         events::emit_contract_upgraded(&env, old_version, new_version);
         Ok(())
+    }
+
+    /// Admin-only emergency freeze: halts `deposit`, `release_funds` and `cancel_split`
+    /// while leaving all escrow state and read-only functions untouched.
+    ///
+    /// Pausing also discards any pending unpause schedule, so a re-pause always
+    /// restarts the full 48-hour timelock rather than inheriting an elapsed one.
+    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        if storage::is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+
+        storage::set_paused(&env, true);
+        storage::clear_unpause_scheduled_at(&env);
+        events::emit_paused(&env, &admin);
+        Ok(())
+    }
+
+    /// Admin-only: start the mandatory 48-hour timelock before the contract can be
+    /// unfrozen. Calling it again restarts the timelock from the current ledger time.
+    pub fn schedule_unpause(env: Env, admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        if !storage::is_paused(&env) {
+            return Err(Error::NotPaused);
+        }
+
+        let unpause_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(UNPAUSE_TIMELOCK_SECONDS)
+            .ok_or(Error::InvalidInput)?;
+        storage::set_unpause_scheduled_at(&env, unpause_at);
+        events::emit_unpause_scheduled(&env, &admin, unpause_at);
+        Ok(())
+    }
+
+    /// Admin-only: lift the emergency freeze. Fails unless `schedule_unpause` was
+    /// called at least 48 hours earlier.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        if !storage::is_paused(&env) {
+            return Err(Error::NotPaused);
+        }
+
+        let unpause_at =
+            storage::get_unpause_scheduled_at(&env).ok_or(Error::UnpauseNotScheduled)?;
+        if env.ledger().timestamp() < unpause_at {
+            return Err(Error::TimelockNotElapsed);
+        }
+
+        storage::set_paused(&env, false);
+        storage::clear_unpause_scheduled_at(&env);
+        events::emit_unpaused(&env, &admin);
+        Ok(())
+    }
+
+    /// Public read of the emergency freeze state.
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
+    }
+
+    /// Public read of the earliest timestamp at which `unpause` may succeed,
+    /// or `None` when no unpause is scheduled.
+    pub fn get_unpause_scheduled_at(env: Env) -> Option<u64> {
+        storage::get_unpause_scheduled_at(&env)
     }
 
     /// Create an escrow split. If `max_participants` is `None`, the cap defaults to 50.
@@ -198,6 +288,7 @@ impl SplitEscrowContract {
     /// Cancel a split and refund all deposited participant balances.
     /// Used when a dispute is upheld (raiser wins).
     pub fn cancel_split(env: Env, split_id: u64) -> Result<(), Error> {
+        require_not_paused(&env)?;
         let mut split = storage::get_split(&env, split_id).ok_or(Error::SplitNotFound)?;
         // Only the split creator can cancel/refund.
         split.creator.require_auth();
@@ -244,6 +335,7 @@ impl SplitEscrowContract {
         participant: Address,
         amount: i128,
     ) -> Result<(), Error> {
+        require_not_paused(&env)?;
         participant.require_auth();
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -366,6 +458,7 @@ impl SplitEscrowContract {
     /// single-payee mode). Emits one `FundsReleasedToParticipant` event per participant plus
     /// one summary `FundsReleased` event for the total net amount distributed.
     pub fn release_funds(env: Env, split_id: u64) -> Result<(), Error> {
+        require_not_paused(&env)?;
         let mut split = storage::get_split(&env, split_id).ok_or(Error::SplitNotFound)?;
         // Only the split creator can finalize settlement.
         split.creator.require_auth();

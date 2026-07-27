@@ -92,3 +92,24 @@ pub fn emit_note_updated(env: &Env, split_id: u64, note: &String) {
     env.events()
         .publish(("NoteUpdated", "split_id"), (split_id, note.clone()));
 }
+
+/// Emitted when the admin freezes all state-changing operations.
+pub fn emit_paused(env: &Env, admin: &Address) {
+    env.events()
+        .publish((Symbol::new(env, "Paused"),), admin.clone());
+}
+
+/// Emitted when the admin starts the 48-hour unfreeze timelock.
+/// `unpause_at` is the earliest ledger timestamp at which `unpause` may succeed.
+pub fn emit_unpause_scheduled(env: &Env, admin: &Address, unpause_at: u64) {
+    env.events().publish(
+        (Symbol::new(env, "UnpauseScheduled"),),
+        (admin.clone(), unpause_at),
+    );
+}
+
+/// Emitted when the timelock has elapsed and the contract is live again.
+pub fn emit_unpaused(env: &Env, admin: &Address) {
+    env.events()
+        .publish((Symbol::new(env, "Unpaused"),), admin.clone());
+}
