@@ -81,12 +81,11 @@ export function buildCorsConfig(configService: ConfigService): {
   };
 }
 
-@WebSocketGateway({
-  cors: { origin: '*', credentials: true },
-})
-export class PaymentGateway
-  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
-{
+@WebSocketGateway()
+ export class PaymentGateway
+   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
+ {
+
   @WebSocketServer() server!: Server;
   private logger: Logger = new Logger('PaymentGateway');
 
