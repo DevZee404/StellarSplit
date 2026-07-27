@@ -92,9 +92,11 @@ async function bootstrap() {
   app.enableCors(corsOptions);
   app.useWebSocketAdapter(
     new SocketIoAdapter(app, {
-      origin: corsOptions.origin,
-      credentials: true,
-      methods: ['GET', 'POST'],
+      cors: {
+        origin: corsOptions.origin,
+        credentials: true,
+        methods: ['GET', 'POST'],
+      },
     }),
   );
 
