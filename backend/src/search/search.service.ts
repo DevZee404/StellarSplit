@@ -48,7 +48,7 @@ export class SearchService implements OnModuleInit {
   private readonly MAX_LIMIT = 100;
 
   // Minimum similarity threshold for fuzzy matching (0-1 scale)
-  private readonly FUZZY_THRESHOLD = 0.3;
+  private readonly FUZZY_THRESHOLD = 0.25;
 
   // Feature detection for graceful degradation
   private features = {
@@ -167,13 +167,52 @@ export class SearchService implements OnModuleInit {
     // Apply sorting
     queryBuilder = this.applySorting(queryBuilder, dto.sort);
 
-    // Get total count before pagination (for UI purposes)
-    const total = await this.getFilteredCount(dto);
-
     // Fetch results with one extra to check if there are more
-    const results = await queryBuilder
+    let results = await queryBuilder
       .take(limit + 1)
       .getMany();
+
+    let trigramFallbackUsed = false;
+    if (
+      results.length === 0 &&
+      searchQuery.trim() &&
+      this.features.fts &&
+      this.features.trgm
+    ) {
+      this.logger.debug(`Trigram fallback triggered for search query: ${searchQuery}`);
+
+      let fallbackBuilder = this.splitRepository
+        .createQueryBuilder('split')
+        .leftJoinAndSelect('split.items', 'item')
+        .leftJoinAndSelect('split.participants', 'participant');
+
+      if (dto.filters) {
+        fallbackBuilder = this.applyFilters(fallbackBuilder, dto.filters);
+      }
+      if (cursor) {
+        fallbackBuilder = this.applyCursor(fallbackBuilder, cursor, dto.sort);
+      }
+
+      fallbackBuilder = this.applyTrigramSearch(fallbackBuilder, searchQuery);
+      fallbackBuilder = this.applySorting(fallbackBuilder, dto.sort);
+      if (!dto.sort) {
+        fallbackBuilder.addOrderBy(
+          `similarity(COALESCE(split.description, ''), :rawQuery)`,
+          'DESC',
+        );
+      }
+
+      results = await fallbackBuilder
+        .take(limit + 1)
+        .setParameters({ rawQuery: searchQuery })
+        .getMany();
+
+      trigramFallbackUsed = true;
+    }
+
+    const total = trigramFallbackUsed
+      ? await this.getTrigramCount(dto)
+      : await this.getFilteredCount(dto);
 
     // Check if there are more results beyond this page
     const hasMore = results.length > limit;
@@ -205,40 +244,55 @@ export class SearchService implements OnModuleInit {
     queryBuilder: SelectQueryBuilder<Split>,
     searchQuery: string,
   ): SelectQueryBuilder<Split> {
-    // Use fallback search if FTS extension is not available
-    if (!this.features.fts && !this.features.trgm) {
-      return this.applyFallbackSearch(queryBuilder, searchQuery);
+    // If FTS is unavailable, use trigram search when possible or fall back to ILIKE
+    if (!this.features.fts) {
+      return this.features.trgm
+        ? this.applyTrigramSearch(queryBuilder, searchQuery)
+        : this.applyFallbackSearch(queryBuilder, searchQuery);
     }
 
     // Convert search query to tsquery format
     // Using plainto_tsquery for simple queries, websearch_to_tsquery for complex ones
     const tsQuery = this.buildTsQuery(searchQuery);
 
-    // Full-text search on split description
+    // Full-text search on split description and item names only
     queryBuilder.andWhere(`(
       to_tsvector('english', COALESCE(split.description, '')) @@ to_tsquery('english', :tsQuery)
-      OR similarity(COALESCE(split.description, ''), :rawQuery) > :threshold
       OR EXISTS (
         SELECT 1 FROM items i 
         WHERE i."splitId" = split.id 
-        AND (
-          to_tsvector('english', i.name) @@ to_tsquery('english', :tsQuery)
-          OR similarity(i.name, :rawQuery) > :threshold
-        )
+        AND to_tsvector('english', i.name) @@ to_tsquery('english', :tsQuery)
       )
     )`, {
       tsQuery,
-      rawQuery: searchQuery,
-      threshold: this.FUZZY_THRESHOLD
     });
 
     // Add relevance score for sorting
     queryBuilder.addSelect(`(
-      COALESCE(ts_rank(to_tsvector('english', COALESCE(split.description, '')), to_tsquery('english', :tsQuery)), 0) +
-      COALESCE(similarity(COALESCE(split.description, ''), :rawQuery), 0)
+      COALESCE(ts_rank(to_tsvector('english', COALESCE(split.description, '')), to_tsquery('english', :tsQuery)), 0)
     )`, 'search_score');
 
     return queryBuilder;
+  }
+
+  /**
+   * Apply trigram search using pg_trgm similarity
+   */
+  private applyTrigramSearch(
+    queryBuilder: SelectQueryBuilder<Split>,
+    searchQuery: string,
+  ): SelectQueryBuilder<Split> {
+    return queryBuilder.andWhere(`(
+      similarity(COALESCE(split.description, ''), :rawQuery) > :threshold
+      OR EXISTS (
+        SELECT 1 FROM items i 
+        WHERE i."splitId" = split.id 
+        AND similarity(i.name, :rawQuery) > :threshold
+      )
+    )`, {
+      rawQuery: searchQuery,
+      threshold: this.FUZZY_THRESHOLD,
+    });
   }
 
   /**
@@ -379,23 +433,45 @@ export class SearchService implements OnModuleInit {
     let countBuilder = this.splitRepository.createQueryBuilder('split');
 
     if (searchQuery.trim()) {
-      const tsQuery = this.buildTsQuery(searchQuery);
-      countBuilder.andWhere(`(
-        to_tsvector('english', COALESCE(split.description, '')) @@ to_tsquery('english', :tsQuery)
-        OR similarity(COALESCE(split.description, ''), :rawQuery) > :threshold
-        OR EXISTS (
-          SELECT 1 FROM items i 
-          WHERE i."splitId" = split.id 
-          AND (
-            to_tsvector('english', i.name) @@ to_tsquery('english', :tsQuery)
-            OR similarity(i.name, :rawQuery) > :threshold
+      if (this.features.fts) {
+        const tsQuery = this.buildTsQuery(searchQuery);
+        countBuilder.andWhere(`(
+          to_tsvector('english', COALESCE(split.description, '')) @@ to_tsquery('english', :tsQuery)
+          OR EXISTS (
+            SELECT 1 FROM items i 
+            WHERE i."splitId" = split.id 
+            AND to_tsvector('english', i.name) @@ to_tsquery('english', :tsQuery)
           )
-        )
-      )`, {
-        tsQuery,
-        rawQuery: searchQuery,
-        threshold: this.FUZZY_THRESHOLD
-      });
+        )`, {
+          tsQuery,
+        });
+      } else if (this.features.trgm) {
+        countBuilder.andWhere(`(
+          similarity(COALESCE(split.description, ''), :rawQuery) > :threshold
+          OR EXISTS (
+            SELECT 1 FROM items i 
+            WHERE i."splitId" = split.id 
+            AND similarity(i.name, :rawQuery) > :threshold
+          )
+        )`, {
+          rawQuery: searchQuery,
+          threshold: this.FUZZY_THRESHOLD,
+        });
+      } else {
+        const terms = searchQuery.toLowerCase().split(/\s+/).filter(t => t.length > 0);
+        const likePattern = `%${searchQuery.toLowerCase()}%`;
+
+        countBuilder.andWhere(`(
+          LOWER(split.description) LIKE :likePattern
+          OR EXISTS (
+            SELECT 1 FROM items i 
+            WHERE i."splitId" = split.id 
+            AND LOWER(i.name) LIKE :likePattern
+          )
+        )`, {
+          likePattern,
+        });
+      }
     }
 
     if (dto.filters) {
@@ -415,7 +491,7 @@ export class SearchService implements OnModuleInit {
     const results: SearchResultItemDto[] = [];
 
     for (const split of splits) {
-      const highlights = this.generateHighlights(split, searchQuery);
+      const highlights = this.sanitiseHighlights(this.generateHighlights(split, searchQuery));
       const score = this.calculateRelevanceScore(split, searchQuery);
 
       results.push({
@@ -435,7 +511,7 @@ export class SearchService implements OnModuleInit {
 
   /**
    * Generate highlighted snippets for matched content
-   * I'm using a simple approach here - wrapping matched terms in <mark> tags
+   * I'm using a simple approach here - wrapping matched terms in <em> tags
    */
   private generateHighlights(split: Split, searchQuery: string): SearchHighlightsDto {
     const highlights: SearchHighlightsDto = {};
@@ -446,7 +522,7 @@ export class SearchService implements OnModuleInit {
       let highlightedDesc = split.description;
       for (const term of terms) {
         const regex = new RegExp(`(${this.escapeRegex(term)})`, 'gi');
-        highlightedDesc = highlightedDesc.replace(regex, '<mark>$1</mark>');
+        highlightedDesc = highlightedDesc.replace(regex, '<em>$1</em>');
       }
       if (highlightedDesc !== split.description) {
         highlights.description = highlightedDesc;
@@ -461,7 +537,7 @@ export class SearchService implements OnModuleInit {
         for (const term of terms) {
           if (itemNameLower.includes(term)) {
             const regex = new RegExp(`(${this.escapeRegex(term)})`, 'gi');
-            matchedItems.push(item.name.replace(regex, '<mark>$1</mark>'));
+            matchedItems.push(item.name.replace(regex, '<em>$1</em>'));
             break;
           }
         }
@@ -536,6 +612,52 @@ export class SearchService implements OnModuleInit {
       .replace(/[<>]/g, '') // Remove potential HTML
       .slice(0, 200) // Limit length
       .trim();
+  }
+
+  /**
+   * Sanitize an HTML-highlighted fragment, preserving only <em> tags
+   */
+  private sanitiseHighlight(raw: string): string {
+    return raw.replace(/<(?!\/?em\b)[^>]*>/gi, '');
+  }
+
+  private sanitiseHighlights(highlights: SearchHighlightsDto): SearchHighlightsDto {
+    const sanitized: SearchHighlightsDto = {};
+
+    if (highlights.description) {
+      sanitized.description = this.sanitiseHighlight(highlights.description);
+    }
+    if (highlights.itemNames) {
+      sanitized.itemNames = highlights.itemNames.map(name => this.sanitiseHighlight(name));
+    }
+
+    return sanitized;
+  }
+
+  private async getTrigramCount(dto: SearchSplitsDto): Promise<number> {
+    const searchQuery = this.sanitizeSearchQuery(dto.query);
+
+    const countBuilder = this.splitRepository.createQueryBuilder('split');
+
+    if (searchQuery.trim()) {
+      countBuilder.andWhere(`(
+        similarity(COALESCE(split.description, ''), :rawQuery) > :threshold
+        OR EXISTS (
+          SELECT 1 FROM items i 
+          WHERE i."splitId" = split.id 
+          AND similarity(i.name, :rawQuery) > :threshold
+        )
+      )`, {
+        rawQuery: searchQuery,
+        threshold: this.FUZZY_THRESHOLD,
+      });
+    }
+
+    if (dto.filters) {
+      this.applyFilters(countBuilder, dto.filters);
+    }
+
+    return countBuilder.getCount();
   }
 
   /**
