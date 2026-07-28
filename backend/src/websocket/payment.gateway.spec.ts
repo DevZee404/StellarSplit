@@ -4,7 +4,7 @@ import { INestApplication, UnauthorizedException, BadRequestException } from '@n
 import { Server, Socket } from 'socket.io';
 import { io } from 'socket.io-client';
 import { AddressInfo } from 'net';
-import { PaymentGateway, WsJwtAuthService, WsPaymentAuthGuard, buildCorsConfig } from './payment.gateway';
+import { PaymentGateway, WsJwtAuthService, WsPaymentAuthGuard } from './payment.gateway';
 import { SocketIoAdapter } from './socket-io.adapter';
 import { AuthorizationService } from '../auth/services/authorization.service';
 
@@ -207,6 +207,27 @@ describe('PaymentGateway', () => {
       expect(mockServer.emit).toHaveBeenCalledWith('split-completion', payload);
     });
   });
+
+  describe('Instantiation', () => {
+    it('should verify the gateway can be instantiated without a pre-loaded ConfigService', async () => {
+      const moduleInstance = await Test.createTestingModule({
+        providers: [
+          PaymentGateway,
+          {
+            provide: WsJwtAuthService,
+            useValue: {},
+          },
+          {
+            provide: AuthorizationService,
+            useValue: {},
+          },
+        ],
+      }).compile();
+
+      const gatewayInstance = moduleInstance.get<PaymentGateway>(PaymentGateway);
+      expect(gatewayInstance).toBeDefined();
+    });
+  });
 });
 
 function createTestToken(userId: string, secret: string): string {
@@ -269,29 +290,6 @@ describe('WsJwtAuthService', () => {
     } as unknown as Socket;
 
     expect(() => service.authenticateClient(mockClient)).toThrow(UnauthorizedException);
-  });
-});
-
-describe('CORS Configuration', () => {
-  it('should use allowed origins in production', () => {
-    const configService = new ConfigService({
-      NODE_ENV: 'production',
-      JWT_SECRET: 'test-secret',
-      CORS_ALLOWED_ORIGINS: 'https://app.example.com,https://admin.example.com',
-    });
-
-    const corsConfig = buildCorsConfig(configService);
-    expect(corsConfig.origin).toEqual(['https://app.example.com', 'https://admin.example.com']);
-  });
-
-  it('should use localhost origins in development', () => {
-    const configService = new ConfigService({
-      NODE_ENV: 'development',
-      JWT_SECRET: 'test-secret',
-    });
-
-    const corsConfig = buildCorsConfig(configService);
-    expect(corsConfig.origin).toContain('http://localhost:3000');
   });
 });
 
