@@ -16,6 +16,8 @@ import {
 } from "../utils/api-client";
 import { formatCurrency, formatRelativeTime } from "../utils/format";
 import { useAbortableRequest } from "../hooks/useAbortableRequest";
+import { useSplits } from "../hooks/useSplits";
+import { SplitCardSkeleton } from "../components/Split/LoadingSkeleton";
 
 function describeActivity(
   activity: ApiActivityRecord,
@@ -135,9 +137,12 @@ export default function DashboardPage() {
   const activities = dashboardData?.activities ?? [];
   const currency = profile?.preferredCurrency ?? "USD";
 
+  const { data: splits, loading: splitsLoading, error: splitsError, refetch: refetchSplits } = useSplits();
+
   const loadDashboard = useCallback(() => {
     refetchDashboard();
-  }, [refetchDashboard]);
+    refetchSplits();
+  }, [refetchDashboard, refetchSplits]);
 
   const stats = useMemo(() => {
     if (!summary) {
@@ -263,7 +268,64 @@ export default function DashboardPage() {
               })}
             </div>
 
-            <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
+            <div className="mt-8">
+              <h2 className="text-lg font-bold text-theme mb-4">{t("dashboard.yourSplits", "Your Active Splits")}</h2>
+              {splitsLoading ? (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  <SplitCardSkeleton />
+                  <SplitCardSkeleton />
+                  <SplitCardSkeleton />
+                </div>
+              ) : splitsError ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 p-6 shadow-sm">
+                  <h3 className="text-lg font-bold text-red-800">{t("dashboard.failedToLoadSplits", "Failed to load splits")}</h3>
+                  <p className="mt-2 text-sm text-red-700">{splitsError}</p>
+                  <button
+                    type="button"
+                    onClick={() => void refetchSplits()}
+                    className="mt-4 inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    {t("dashboard.retry", "Retry")}
+                  </button>
+                </div>
+              ) : splits && splits.length > 0 ? (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {splits.map(split => (
+                    <Link to={`/split/${split.id}`} key={split.id} className="block group">
+                      <div className="rounded-2xl border border-theme bg-card-theme p-5 shadow-sm transition hover:shadow-md hover:border-blue-500/50">
+                        <div className="flex justify-between items-start mb-4">
+                          <h3 className="font-semibold text-theme text-base truncate pr-4">{split.description || "Untitled Split"}</h3>
+                          <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${
+                            split.status === 'active' ? 'bg-blue-100 text-blue-800' :
+                            split.status === 'completed' ? 'bg-emerald-100 text-emerald-800' :
+                            'bg-gray-100 text-gray-800'
+                          }`}>
+                            {split.status}
+                          </span>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm text-muted-theme">
+                            Total: <span className="font-semibold text-theme">{formatCurrency(normalizeDecimal(split.totalAmount), split.preferredCurrency || "USD")}</span>
+                          </p>
+                          <p className="text-sm text-muted-theme">
+                            Participants: <span className="font-semibold text-theme">{split.participants?.length || 0}</span>
+                          </p>
+                        </div>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-theme p-8 text-center">
+                  <p className="text-base font-semibold text-theme">
+                    {t("dashboard.noSplits", "No active splits")}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-8 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
               <div className="rounded-2xl border border-theme bg-card-theme p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                   <h2 className="text-lg font-bold text-theme">

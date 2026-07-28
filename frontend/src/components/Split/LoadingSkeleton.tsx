@@ -33,3 +33,19 @@ export const LoadingSkeleton = () => {
         </div>
     );
 };
+
+export const SplitCardSkeleton = () => {
+    return (
+        <div className="rounded-2xl border border-theme bg-card-theme p-5 shadow-sm animate-pulse">
+            <div className="flex justify-between items-start mb-4">
+                <div className="h-6 w-1/2 bg-gray-200 rounded"></div>
+                <div className="h-6 w-16 bg-gray-200 rounded-full"></div>
+            </div>
+            <div className="space-y-2 mt-4">
+                <div className="h-4 w-1/3 bg-gray-200 rounded"></div>
+                <div className="h-4 w-1/4 bg-gray-200 rounded"></div>
+            </div>
+        </div>
+    );
+};
+
