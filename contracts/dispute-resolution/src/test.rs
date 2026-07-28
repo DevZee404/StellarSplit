@@ -56,6 +56,7 @@ fn setup() -> (
         &None,
         &false,
         &None,
+        &None, // payee: defaults to single-payee mode (creator)
     );
     token_admin_client.mint(&participant, &10_000i128);
     escrow_client.deposit(&escrow_split_id, &participant, &10_000i128);

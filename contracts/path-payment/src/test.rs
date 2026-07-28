@@ -25,6 +25,16 @@ fn test_swap_failure_event_emitted() {
     let split_id = String::from_str(&env, "split-swapfail");
     let amount = 100_0000000i128;
 
+    // execute_path_payment consumes the intent stored by find_payment_path,
+    // so the path has to be discovered before it can be executed.
+    client.register_pair(&Asset(token_a.clone()), &Asset(token_b.clone()));
+    client.find_payment_path(
+        &Asset(token_a.clone()),
+        &Asset(token_b.clone()),
+        &amount,
+        &split_id,
+    );
+
     // No router set, so swap will fail
     let res = client.try_execute_path_payment(&caller, &split_id, &path, &amount, &0u32);
     assert!(res.is_err());
@@ -137,7 +147,8 @@ fn test_find_payment_path_not_initialized() {
     let (env, _, client) = setup();
     let a = Asset(Address::generate(&env));
     let b = Asset(Address::generate(&env));
-    let res = client.try_find_payment_path(&a, &b, &1000i128);
+    let res =
+        client.try_find_payment_path(&a, &b, &1000i128, &String::from_str(&env, "split-uninit"));
     assert!(res.is_err());
 }
 
@@ -146,7 +157,12 @@ fn test_find_payment_path_same_asset() {
     let (env, admin, client) = setup();
     client.initialize(&admin);
     let a = Asset(Address::generate(&env));
-    let path = client.find_payment_path(&a, &a, &1000i128);
+    let path = client.find_payment_path(
+        &a,
+        &a,
+        &1000i128,
+        &String::from_str(&env, "split-same-asset"),
+    );
     assert_eq!(path.len(), 1);
     assert_eq!(path.get(0).unwrap().address(), a.address());
 }
@@ -162,6 +178,7 @@ fn test_find_payment_path_direct_pair() {
         &Asset(from_addr.clone()),
         &Asset(to_addr.clone()),
         &1000i128,
+        &String::from_str(&env, "split-direct-pair"),
     );
     assert_eq!(path.len(), 2);
     assert_eq!(path.get(0).unwrap().address(), &from_addr);
@@ -177,7 +194,12 @@ fn test_find_payment_path_multi_hop() {
     let c = Address::generate(&env);
     client.register_pair(&Asset(a.clone()), &Asset(b.clone()));
     client.register_pair(&Asset(b.clone()), &Asset(c.clone()));
-    let path = client.find_payment_path(&Asset(a.clone()), &Asset(c.clone()), &1000i128);
+    let path = client.find_payment_path(
+        &Asset(a.clone()),
+        &Asset(c.clone()),
+        &1000i128,
+        &String::from_str(&env, "split-multi-hop"),
+    );
     assert_eq!(path.len(), 3);
     assert_eq!(path.get(0).unwrap().address(), &a);
     assert_eq!(path.get(1).unwrap().address(), &b);
@@ -190,7 +212,12 @@ fn test_find_payment_path_not_found() {
     client.initialize(&admin);
     let a = Asset(Address::generate(&env));
     let b = Asset(Address::generate(&env));
-    let res = client.try_find_payment_path(&a, &b, &1000i128);
+    let res = client.try_find_payment_path(
+        &a,
+        &b,
+        &1000i128,
+        &String::from_str(&env, "split-not-found"),
+    );
     assert!(res.is_err());
 }
 
@@ -243,6 +270,12 @@ fn test_execute_path_payment_single_asset() {
     path.push_back(Asset(token_a.clone()));
     let split_id = String::from_str(&env, "split-1");
     let amount = 100_0000000i128;
+    client.find_payment_path(
+        &Asset(token_a.clone()),
+        &Asset(token_a.clone()),
+        &amount,
+        &split_id,
+    );
     let received = client.execute_path_payment(&caller, &split_id, &path, &amount, &0u32);
     assert_eq!(received, amount);
     assert_eq!(token_client.balance(&caller), 400_0000000i128);
@@ -258,40 +291,39 @@ fn test_execute_path_payment_invalid_amount() {
     let mut path = Vec::new(&env);
     path.push_back(Asset(token_a.clone()));
     let split_id = String::from_str(&env, "split-1");
+    client.find_payment_path(
+        &Asset(token_a.clone()),
+        &Asset(token_a.clone()),
+        &100i128,
+        &split_id,
+    );
     let res = client.try_execute_path_payment(&caller, &split_id, &path, &0i128, &100u32);
     assert!(res.is_err());
     assert_eq!(res.err().unwrap(), Ok(Error::InvalidAmount));
 }
 
+/// `execute_path_payment` takes its path from the intent stored by
+/// `find_payment_path`, ignoring the caller-supplied vec, so executing a split
+/// that never went through discovery has nothing to act on.
+///
+/// This replaces the former `test_execute_path_payment_empty_path`: a stored
+/// intent can never hold an empty path, so the `is_empty()` guard inside
+/// `execute_path_payment` is unreachable and cannot be asserted on. The
+/// over-long counterpart is covered by `test_path_too_long`, which exercises
+/// the `MAX_PATH_LEN` guard at `find_payment_path` — the only entry point that
+/// can actually build a path.
 #[test]
-fn test_execute_path_payment_empty_path() {
-    let (env, admin, _token_a, _token_b, _contract_id, client, _, _) = setup_with_tokens();
-    client.initialize(&admin);
-    let caller = Address::generate(&env);
-    env.mock_all_auths();
-    let path = Vec::new(&env);
-    let split_id = String::from_str(&env, "split-1");
-    let res = client.try_execute_path_payment(&caller, &split_id, &path, &100i128, &100u32);
-    assert!(res.is_err());
-    assert_eq!(res.err().unwrap(), Ok(Error::InvalidPath));
-}
-
-// ========== Slippage (simulated with rates) ==========
-
-#[test]
-fn test_execute_path_payment_path_too_long() {
-    let (env, admin, _token_a, _token_b, _contract_id, client, _, _) = setup_with_tokens();
+fn test_execute_path_payment_without_discovered_path_fails() {
+    let (env, admin, token_a, _token_b, _contract_id, client, _, _) = setup_with_tokens();
     client.initialize(&admin);
     let caller = Address::generate(&env);
     env.mock_all_auths();
     let mut path = Vec::new(&env);
-    for _ in 0..7 {
-        path.push_back(Asset(Address::generate(&env)));
-    }
-    let split_id = String::from_str(&env, "split-long-path");
+    path.push_back(Asset(token_a.clone()));
+    let split_id = String::from_str(&env, "split-undiscovered");
     let res = client.try_execute_path_payment(&caller, &split_id, &path, &100i128, &100u32);
     assert!(res.is_err());
-    assert_eq!(res.err().unwrap(), Ok(Error::InvalidPath));
+    assert_eq!(res.err().unwrap(), Ok(Error::PathNotFound));
 }
 
 // ========== Admin: set_swap_router ==========
@@ -490,7 +522,12 @@ fn test_unsupported_asset_pair() {
     let b = Asset(Address::generate(&env));
 
     // Try to find path for unregistered pair
-    let res = client.try_find_payment_path(&a, &b, &1000i128);
+    let res = client.try_find_payment_path(
+        &a,
+        &b,
+        &1000i128,
+        &String::from_str(&env, "split-unsupported-pair"),
+    );
     assert!(res.is_err());
 }
 
@@ -507,7 +544,12 @@ fn test_missing_intermediate_asset() {
     client.register_pair(&Asset(a.clone()), &Asset(b.clone()));
 
     // Try to find path A->C (should fail)
-    let res = client.try_find_payment_path(&Asset(a), &Asset(c), &1000i128);
+    let res = client.try_find_payment_path(
+        &Asset(a),
+        &Asset(c),
+        &1000i128,
+        &String::from_str(&env, "split-missing-intermediate"),
+    );
     assert!(res.is_err());
 }
 
@@ -639,7 +681,12 @@ fn test_max_path_length() {
     client.register_pair(&Asset(a5.clone()), &Asset(a6.clone()));
 
     // Find path from first to last
-    let path = client.find_payment_path(&Asset(a1.clone()), &Asset(a6.clone()), &1000i128);
+    let path = client.find_payment_path(
+        &Asset(a1.clone()),
+        &Asset(a6.clone()),
+        &1000i128,
+        &String::from_str(&env, "split-max-path-len"),
+    );
 
     assert_eq!(path.len(), 6);
 }
@@ -667,7 +714,12 @@ fn test_path_too_long() {
     client.register_pair(&Asset(a6.clone()), &Asset(a7.clone()));
 
     // Try to find path - should fail with InvalidPath or PathNotFound
-    let res = client.try_find_payment_path(&Asset(a1.clone()), &Asset(a7.clone()), &1000i128);
+    let res = client.try_find_payment_path(
+        &Asset(a1.clone()),
+        &Asset(a7.clone()),
+        &1000i128,
+        &String::from_str(&env, "split-path-too-long"),
+    );
     assert!(res.is_err());
 }
 
@@ -686,7 +738,12 @@ fn test_circular_path_prevention() {
     client.register_pair(&Asset(c.clone()), &Asset(a.clone())); // Circular
 
     // Path finding should still work and not loop infinitely
-    let path = client.find_payment_path(&Asset(a.clone()), &Asset(c.clone()), &1000i128);
+    let path = client.find_payment_path(
+        &Asset(a.clone()),
+        &Asset(c.clone()),
+        &1000i128,
+        &String::from_str(&env, "split-circular"),
+    );
     assert!(!path.is_empty());
 }
 
@@ -751,6 +808,12 @@ fn test_self_transfer_same_asset() {
     path.push_back(Asset(token_a.clone()));
     let split_id = String::from_str(&env, "split-self");
     let amount = 100_0000000i128;
+    client.find_payment_path(
+        &Asset(token_a.clone()),
+        &Asset(token_a.clone()),
+        &amount,
+        &split_id,
+    );
 
     // Same asset payment should succeed
     let received = client.execute_path_payment(&caller, &split_id, &path, &amount, &0u32);
@@ -776,7 +839,12 @@ fn test_multi_hop_payment_simulation() {
     client.set_rate(&Asset(b.clone()), &Asset(c.clone()), &5_000_000); // 1:0.5
 
     // Find path
-    let path = client.find_payment_path(&Asset(a.clone()), &Asset(c.clone()), &1000i128);
+    let path = client.find_payment_path(
+        &Asset(a.clone()),
+        &Asset(c.clone()),
+        &1000i128,
+        &String::from_str(&env, "split-multi-hop-sim"),
+    );
     assert_eq!(path.len(), 3);
 
     // Simulate conversion: 1000 A -> 1000 B -> 500 C
@@ -993,6 +1061,12 @@ mod proptests {
                     // Keep router's local rates identical to PathPayment so
                     // swap() matches PathPayment's simulate_path_amount().
                     router_client.set_rate(&assets[i], &assets[j], &rate);
+                    // Register the directed pair so find_payment_path can
+                    // discover the direct hop and store a path intent.
+                    client.register_pair(
+                        &Asset(assets[i].clone()),
+                        &Asset(assets[j].clone()),
+                    );
                 }
             }
 
@@ -1064,8 +1138,15 @@ mod proptests {
                     from_total_before
                 };
 
-                // Execute
+                // Execute. execute_path_payment reads the path from the intent
+                // stored by find_payment_path, so discovery has to run first.
                 let split_id = String::from_str(&env, "prop-split");
+                client.find_payment_path(
+                    &from_asset,
+                    &dest_asset,
+                    &amount_in,
+                    &split_id,
+                );
                 let received = client.execute_path_payment(
                     &caller,
                     &split_id,

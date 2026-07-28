@@ -145,19 +145,21 @@ pub const DEFAULT_MAX_PATH_STALENESS_LEDGERS: u32 = 30;
 pub fn store_path_intent(env: &Env, split_id: &String, intent: &PathIntent) {
     let key = DataKey::PathIntent(split_id.clone());
     env.storage().persistent().set(&key, intent);
-    env.storage().persistent().extend_ttl(
-        &key,
-        LEDGER_TTL_THRESHOLD,
-        LEDGER_TTL_PERSISTENT,
-    );
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_TTL_THRESHOLD, LEDGER_TTL_PERSISTENT);
 }
 
 /// Retrieve a stored path intent.
 pub fn get_path_intent(env: &Env, split_id: &String) -> Option<PathIntent> {
-    env.storage().persistent().get(&DataKey::PathIntent(split_id.clone()))
+    env.storage()
+        .persistent()
+        .get(&DataKey::PathIntent(split_id.clone()))
 }
 
 /// Check if a path intent exists.
 pub fn has_path_intent(env: &Env, split_id: &String) -> bool {
-    env.storage().persistent().has(&DataKey::PathIntent(split_id.clone()))
+    env.storage()
+        .persistent()
+        .has(&DataKey::PathIntent(split_id.clone()))
 }
