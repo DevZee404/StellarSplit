@@ -27,6 +27,7 @@ describe('WebhooksController', () => {
 
   const mockDeliveryService = {
     getDeliveryLogs: jest.fn(),
+    getRecentDeliveries: jest.fn(),
     getDeliveryStats: jest.fn(),
   };
 
@@ -178,12 +179,12 @@ describe('WebhooksController', () => {
       const webhook = { id: 'webhook-123', userId: mockUser.id };
 
       mockWebhooksService.findOne.mockResolvedValue(webhook);
-      mockDeliveryService.getDeliveryLogs.mockResolvedValue(deliveries);
+      mockDeliveryService.getRecentDeliveries.mockResolvedValue(deliveries);
 
-      const result = await controller.getDeliveries('webhook-123', mockUser, 50);
+      const result = await controller.getDeliveries('webhook-123', mockUser);
 
       expect(mockPolicyService.assertOwnership).toHaveBeenCalledWith(mockUser, webhook);
-      expect(mockDeliveryService.getDeliveryLogs).toHaveBeenCalledWith('webhook-123', 50);
+      expect(mockDeliveryService.getRecentDeliveries).toHaveBeenCalledWith('webhook-123', 50);
       expect(result).toEqual(deliveries);
     });
   });

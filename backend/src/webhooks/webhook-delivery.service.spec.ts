@@ -7,6 +7,9 @@ import { Webhook } from './webhook.entity';
 import { WebhookDelivery, DeliveryStatus } from './webhook-delivery.entity';
 import { WebhookEventType } from './webhook.entity';
 import { WebhookRateLimitStore } from './webhook-rate-limit.store';
+import axios from 'axios';
+
+jest.mock('axios');
 
 describe('WebhookDeliveryService', () => {
   let service: WebhookDeliveryService;
@@ -25,6 +28,7 @@ describe('WebhookDeliveryService', () => {
     create: jest.fn(),
     save: jest.fn(),
     find: jest.fn(),
+    findOne: jest.fn(),
   };
 
   const mockQueue = {
@@ -212,6 +216,135 @@ describe('WebhookDeliveryService', () => {
       expect(result.failed).toBe(1);
       expect(result.pending).toBe(1);
       expect(result.successRate).toBe(50);
+    });
+  });
+
+  describe('getRecentDeliveries', () => {
+    it('should return recent delivery logs for a webhook', async () => {
+      const deliveries = [
+        {
+          id: 'delivery-1',
+          webhookId: 'webhook-1',
+          status: DeliveryStatus.SUCCESS,
+        },
+      ];
+
+      mockDeliveryRepository.find.mockResolvedValue(deliveries);
+
+      const result = await service.getRecentDeliveries('webhook-1', 50);
+
+      expect(mockDeliveryRepository.find).toHaveBeenCalledWith({
+        where: { webhookId: 'webhook-1' },
+        order: { createdAt: 'DESC' },
+        take: 50,
+      });
+      expect(result).toEqual(deliveries);
+    });
+  });
+
+  describe('processDelivery', () => {
+    let mockAxios: jest.MockedFunction<typeof axios>;
+
+    beforeEach(() => {
+      mockAxios = axios as any;
+    });
+
+    it('should reset failureCount to 0 on 200 OK', async () => {
+      const delivery = { id: 'delivery-123', attemptCount: 1, status: DeliveryStatus.PENDING };
+      const webhook = { id: 'webhook-123', failureCount: 3, isActive: true };
+
+      mockDeliveryRepository.findOne.mockResolvedValue(delivery);
+      mockWebhookRepository.findOne.mockResolvedValue(webhook);
+      mockAxios.mockResolvedValue({
+        status: 200,
+        data: 'success',
+        statusText: 'OK',
+      } as any);
+
+      await service.processDelivery({
+        deliveryId: 'delivery-123',
+        webhookId: 'webhook-123',
+        url: 'https://example.com',
+        secret: 'secret',
+        eventType: WebhookEventType.SPLIT_CREATED,
+        payload: {},
+      });
+
+      expect(webhook.failureCount).toBe(0);
+      expect(mockWebhookRepository.save).toHaveBeenCalledWith(webhook);
+      expect(mockDeliveryRepository.save).toHaveBeenCalled();
+    });
+
+    it('should not increment failureCount on 404 Not Found', async () => {
+      const delivery = { id: 'delivery-123', attemptCount: 1, status: DeliveryStatus.PENDING };
+      const webhook = { id: 'webhook-123', failureCount: 3, isActive: true };
+
+      mockDeliveryRepository.findOne.mockResolvedValue(delivery);
+      mockWebhookRepository.findOne.mockResolvedValue(webhook);
+      mockAxios.mockResolvedValue({
+        status: 404,
+        data: 'Not Found',
+        statusText: 'Not Found',
+      } as any);
+
+      await service.processDelivery({
+        deliveryId: 'delivery-123',
+        webhookId: 'webhook-123',
+        url: 'https://example.com',
+        secret: 'secret',
+        eventType: WebhookEventType.SPLIT_CREATED,
+        payload: {},
+      });
+
+      expect(webhook.failureCount).toBe(3); // unchanged!
+      expect(mockWebhookRepository.save).not.toHaveBeenCalled();
+      expect(mockDeliveryRepository.save).toHaveBeenCalled();
+    });
+
+    it('should increment failureCount on 500 Internal Error', async () => {
+      const delivery = { id: 'delivery-123', attemptCount: 1, status: DeliveryStatus.PENDING };
+      const webhook = { id: 'webhook-123', failureCount: 3, isActive: true };
+
+      mockDeliveryRepository.findOne.mockResolvedValue(delivery);
+      mockWebhookRepository.findOne.mockResolvedValue(webhook);
+      mockAxios.mockResolvedValue({
+        status: 500,
+        data: 'Server Error',
+        statusText: 'Internal Server Error',
+      } as any);
+
+      await service.processDelivery({
+        deliveryId: 'delivery-123',
+        webhookId: 'webhook-123',
+        url: 'https://example.com',
+        secret: 'secret',
+        eventType: WebhookEventType.SPLIT_CREATED,
+        payload: {},
+      });
+
+      expect(webhook.failureCount).toBe(4);
+      expect(mockWebhookRepository.save).toHaveBeenCalledWith(webhook);
+    });
+
+    it('should increment failureCount on network error when retries are exhausted', async () => {
+      const delivery = { id: 'delivery-123', attemptCount: 3, status: DeliveryStatus.PENDING }; // 3 is MAX_RETRIES
+      const webhook = { id: 'webhook-123', failureCount: 3, isActive: true };
+
+      mockDeliveryRepository.findOne.mockResolvedValue(delivery);
+      mockWebhookRepository.findOne.mockResolvedValue(webhook);
+      mockAxios.mockRejectedValue(new Error('Network connection timeout'));
+
+      await expect(service.processDelivery({
+        deliveryId: 'delivery-123',
+        webhookId: 'webhook-123',
+        url: 'https://example.com',
+        secret: 'secret',
+        eventType: WebhookEventType.SPLIT_CREATED,
+        payload: {},
+      })).rejects.toThrow('Network connection timeout');
+
+      expect(webhook.failureCount).toBe(4);
+      expect(mockWebhookRepository.save).toHaveBeenCalledWith(webhook);
     });
   });
 });

@@ -46,6 +46,9 @@ export class WebhookDelivery {
   @Column({ type: 'integer', nullable: true })
   httpStatus?: number;
 
+  @Column({ type: 'integer', nullable: true })
+  statusCode?: number;
+
   @Column({ type: 'text', nullable: true })
   responseBody?: string;
 
