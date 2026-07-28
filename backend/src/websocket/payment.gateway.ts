@@ -7,7 +7,6 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -52,36 +51,12 @@ export class WsPaymentAuthGuard implements CanActivate {
   }
 }
 
-export function buildCorsConfig(configService: ConfigService): {
-  origin: string | string[];
-  methods: string[];
-  credentials: boolean;
-} {
-  const env = configService.get<string>('NODE_ENV', 'development');
-  const allowedOrigins = configService.get<string>('CORS_ALLOWED_ORIGINS');
-
-  let origin: string | string[];
-  if (allowedOrigins) {
-    origin = allowedOrigins.split(',').map((o) => o.trim());
-  } else if (env === 'production') {
-    origin = configService.get<string>('APP_URL', 'https://stellarsplit.com');
-  } else {
-    origin = [
-      'http://localhost:3000',
-      'http://localhost:3001',
-      'http://127.0.0.1:3000',
-      'http://127.0.0.1:3001',
-    ];
-  }
-
-  return {
-    origin,
-    methods: ['GET', 'POST'],
+@WebSocketGateway({
+  cors: {
+    origin: '*',
     credentials: true,
-  };
-}
-
-@WebSocketGateway()
+  },
+})
  export class PaymentGateway
    implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
  {
