@@ -3,7 +3,7 @@ import { Split } from '../../entities/split.entity';
 
 /**
  * Highlighted matches for search result display
- * These contain the matched text with <mark> tags for frontend highlighting
+ * These contain the matched text with <em> tags for frontend highlighting
  */
 export class SearchHighlightsDto {
   @ApiPropertyOptional({ 
