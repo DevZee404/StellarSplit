@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -6,17 +7,21 @@ import { Horizon } from '@stellar/stellar-sdk';
 import { StellarService } from './stellar.service';
 import { HorizonCursor } from '../entities/horizon-cursor.entity';
 import { PaymentsService } from '../payments/payments.service';
+import { backoff } from '../utils/backoff';
 
 @Injectable()
 export class HorizonPollerService {
     private readonly logger = new Logger(HorizonPollerService.name);
     private server: Horizon.Server;
+    private retryCount = 0;
+    private lastLedger = 0;
 
     constructor(
         private readonly stellarService: StellarService,
         private readonly paymentsService: PaymentsService,
         @InjectRepository(HorizonCursor)
         private readonly cursorRepository: Repository<HorizonCursor>,
+        private readonly eventEmitter?: EventEmitter2,
     ) {
         this.server = new Horizon.Server(
             process.env.STELLAR_NETWORK === 'mainnet'
@@ -29,9 +34,6 @@ export class HorizonPollerService {
     async pollPayments() {
         this.logger.log('Polling Horizon for new payments...');
 
-        // In a real scenario, we might poll for all split creator addresses
-        // For this implementation, we'll focus on a master polling strategy or handle it per active split
-        // Let's assume we poll the master account or specific monitored accounts from configuration
         const monitoredAccount = process.env.MONITORED_STELLAR_ACCOUNT;
         if (!monitoredAccount) {
             this.logger.warn('No monitored Stellar account configured');
@@ -54,15 +56,52 @@ export class HorizonPollerService {
                     await this.processPayment(payment);
                 }
 
-                // Update cursor
                 await this.cursorRepository.save({
                     accountId: monitoredAccount,
                     cursor: payment.paging_token,
                 });
             }
+
+            this.retryCount = 0;
         } catch (error) {
             this.logger.error('Error polling Horizon:', error);
+            await this.waitBeforeRetry();
         }
+    }
+
+    private async waitBeforeRetry() {
+        const delay = backoff(this.retryCount++, 1000, 60000);
+        this.logger.warn(`Retrying Horizon poll in ${delay}ms`, { attempt: this.retryCount });
+        await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+
+    async handleStreamRecord(record: { paging_token?: string; ledger?: number }) {
+        const receivedLedger = this.getLedgerValue(record);
+        if (receivedLedger !== undefined && receivedLedger > this.lastLedger + 1) {
+            const gap = receivedLedger - this.lastLedger - 1;
+            this.eventEmitter?.emit('stellar.ledger.gap', {
+                expected: this.lastLedger + 1,
+                received: receivedLedger,
+                gap,
+            });
+            this.logger.error('Ledger gap detected', { gap });
+        }
+
+        this.lastLedger = receivedLedger ?? this.lastLedger;
+        this.retryCount = 0;
+    }
+
+    private getLedgerValue(record: { paging_token?: string; ledger?: number }): number | undefined {
+        if (typeof record.ledger === 'number') {
+            return record.ledger;
+        }
+
+        if (typeof record.paging_token === 'string' && record.paging_token) {
+            const parsed = Number(record.paging_token);
+            return Number.isFinite(parsed) ? parsed : undefined;
+        }
+
+        return undefined;
     }
 
     private async processPayment(payment: any) {
