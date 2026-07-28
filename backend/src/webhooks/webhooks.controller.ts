@@ -159,12 +159,6 @@ export class WebhooksController {
   @Get(':id/deliveries')
   @ApiOperation({ summary: 'Get delivery logs for a webhook' })
   @ApiParam({ name: 'id', description: 'Webhook ID' })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    description: 'Maximum number of deliveries to return',
-    type: Number,
-  })
   @ApiResponse({
     status: 200,
     description: 'List of webhook deliveries',
@@ -173,11 +167,10 @@ export class WebhooksController {
   async getDeliveries(
     @Param('id') id: string,
     @CurrentUser() user: AuthUser,
-    @Query('limit') limit?: number,
   ) {
     const webhook = await this.webhooksService.findOne(id);
     this.policyService.assertOwnership(user, webhook);
-    return await this.deliveryService.getDeliveryLogs(id, limit);
+    return await this.deliveryService.getRecentDeliveries(id, 50);
   }
 
   @Get(':id/stats')

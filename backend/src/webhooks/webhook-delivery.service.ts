@@ -195,6 +195,7 @@ export class WebhookDeliveryService {
           ? DeliveryStatus.SUCCESS
           : DeliveryStatus.FAILED;
       delivery.httpStatus = response.status;
+      delivery.statusCode = response.status;
       delivery.deliveredAt = new Date();
 
       if (response.status >= 200 && response.status < 300) {
@@ -226,14 +227,10 @@ export class WebhookDeliveryService {
         if (response.status >= 200 && response.status < 300) {
           webhook.failureCount = 0;
           webhook.lastTriggeredAt = new Date();
-        } else {
-          webhook.failureCount += 1;
-          if (webhook.failureCount >= 10) {
-            webhook.isActive = false;
-            this.logger.warn(`Webhook ${webhookId} deactivated due to excessive failures`);
-          }
+          await this.webhookRepository.save(webhook);
+        } else if (response.status >= 500) {
+          await this.incrementFailureCount(webhook);
         }
-        await this.webhookRepository.save(webhook);
       }
     } catch (error: any) {
       this.logger.error(
@@ -242,20 +239,23 @@ export class WebhookDeliveryService {
 
       delivery.status = DeliveryStatus.FAILED;
       delivery.errorMessage = error.message?.substring(0, 500);
+      if (error.response?.status) {
+        delivery.statusCode = error.response.status;
+        delivery.httpStatus = error.response.status;
+      }
 
       await this.deliveryRepository.save(delivery);
 
-      // Update webhook failure count
+      // Update webhook failure count on network error if all retries are exhausted
       const webhook = await this.webhookRepository.findOne({
         where: { id: webhookId },
       });
       if (webhook && delivery.attemptCount >= this.MAX_RETRIES) {
-        webhook.failureCount += 1;
-        if (webhook.failureCount >= 10) {
-          webhook.isActive = false;
-          this.logger.warn(`Webhook ${webhookId} deactivated due to excessive failures`);
+        const isHttpStatus = error.response?.status !== undefined;
+        const is5xxOrNetwork = !isHttpStatus || error.response.status >= 500;
+        if (is5xxOrNetwork) {
+          await this.incrementFailureCount(webhook);
         }
-        await this.webhookRepository.save(webhook);
       }
 
       // Re-throw to trigger retry
@@ -268,6 +268,32 @@ export class WebhookDeliveryService {
    */
   private generateSignature(payload: string, secret: string): string {
     return crypto.createHmac('sha256', secret).update(payload).digest('hex');
+  }
+
+  /**
+   * Increment failure count on a webhook and deactivate if threshold reached
+   */
+  private async incrementFailureCount(webhook: Webhook): Promise<void> {
+    webhook.failureCount += 1;
+    if (webhook.failureCount >= 10) {
+      webhook.isActive = false;
+      this.logger.warn(`Webhook ${webhook.id} deactivated due to excessive failures`);
+    }
+    await this.webhookRepository.save(webhook);
+  }
+
+  /**
+   * Get recent delivery attempts for a webhook
+   */
+  async getRecentDeliveries(
+    webhookId: string,
+    limit: number = 50,
+  ): Promise<WebhookDelivery[]> {
+    return await this.deliveryRepository.find({
+      where: { webhookId },
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
   }
 
   /**
