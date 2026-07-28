@@ -166,12 +166,7 @@ export class StellarService {
   }
 
   getNetworkPassphrase(): string {
-    return (
-      this.configService.get<string>('STELLAR_NETWORK_PASSPHRASE') ||
-      (this.configService.get<string>('NODE_ENV') === 'production'
-        ? Networks.PUBLIC
-        : Networks.TESTNET)
-    );
+    return this.configService.get<string>('STELLAR_NETWORK_PASSPHRASE') ?? Networks.TESTNET;
   }
 
   /**
