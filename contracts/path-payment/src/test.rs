@@ -221,7 +221,6 @@ fn test_find_payment_path_not_found() {
     assert!(res.is_err());
 }
 
-
 #[test]
 fn test_path_not_found_emits_event() {
     use soroban_sdk::testutils::Events;
@@ -234,12 +233,7 @@ fn test_path_not_found_emits_event() {
 
     let split_id = String::from_str(&env, "split-no-path");
 
-    let result = client.try_find_payment_path(
-        &from,
-        &to,
-        &1000i128,
-        &split_id,
-    );
+    let result = client.try_find_payment_path(&from, &to, &1000i128, &split_id);
 
     assert!(result.is_err());
 
