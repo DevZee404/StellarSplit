@@ -1,6 +1,7 @@
+export function backoff(attempt: number, baseDelay = 1000, maxDelay = 60000): number {
+  return Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+}
+
 export function calculateBackoff(attempt: number): number {
-  // Exponential backoff with jitter
-  const base = Math.pow(2, attempt) * 1000;
-  const jitter = Math.random() * 500;
-  return base + jitter;
+  return backoff(attempt);
 }
