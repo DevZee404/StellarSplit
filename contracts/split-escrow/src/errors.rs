@@ -24,4 +24,16 @@ pub enum Error {
     ParticipantNotOwed = 16,
     InsufficientFulfillment = 17,
     TotalAmountMismatch = 18,
+
+    /// A state-changing operation was attempted while the contract is paused.
+    ContractPaused = 19,
+
+    /// An unpause step was attempted while the contract is not paused.
+    NotPaused = 20,
+
+    /// `unpause` was called without a prior `schedule_unpause`.
+    UnpauseNotScheduled = 21,
+
+    /// `unpause` was called before the 48-hour timelock elapsed.
+    TimelockNotElapsed = 22,
 }

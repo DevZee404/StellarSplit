@@ -281,12 +281,8 @@ impl PathPaymentContract {
             match amount_out {
                 Ok(out) if out > 0 => {
                     // Per-step rate deviation check
-                    let expected_out = Self::simulate_step_amount(
-                        &env,
-                        &current_asset,
-                        &to_addr,
-                        current_amount,
-                    )?;
+                    let expected_out =
+                        Self::simulate_step_amount(&env, &current_asset, &to_addr, current_amount)?;
                     Self::check_step_slippage(
                         &env,
                         &current_asset,

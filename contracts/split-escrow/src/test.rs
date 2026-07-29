@@ -2,11 +2,11 @@
 extern crate std;
 
 use crate::events::PartialDepositEvent;
-use crate::{SplitEscrowContract, SplitEscrowContractClient, SplitStatus};
+use crate::{Error, SplitEscrowContract, SplitEscrowContractClient, SplitStatus};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as TokenAdminClient};
 use soroban_sdk::{
-    testutils::Address as _, testutils::Events as _, Address, Env, FromVal, IntoVal, Map, String,
-    Vec,
+    testutils::Address as _, testutils::Events as _, testutils::Ledger as _, Address, Env, FromVal,
+    IntoVal, Map, String, Vec,
 };
 
 fn metadata_map(env: &Env, entries: &[(&str, &str)]) -> Map<String, String> {
@@ -290,6 +290,7 @@ fn test_partial_deposit_balance_view_and_threshold_events() {
         &None,
         &false,
         &None,
+        &None, // payee: defaults to single-payee mode (creator)
     );
 
     client.deposit(&split_id, &participant, &50);
@@ -812,6 +813,8 @@ fn test_release_distributes_per_participant() {
     let p2 = Address::generate(&env);
     token_admin.mint(&p2, &1_000_000);
     let payee = Address::generate(&env);
+    // release_funds always runs fee collection, which needs a treasury even at 0 bps.
+    client.set_treasury(&Address::generate(&env));
 
     let mut obligations = Map::new(&env);
     obligations.set(p1.clone(), 7_000);
@@ -853,6 +856,8 @@ fn test_release_single_payee_mode_defaults_to_creator() {
     let (env, client, _admin, creator, p1, token_client, token_admin) = setup();
     let p2 = Address::generate(&env);
     token_admin.mint(&p2, &1_000_000);
+    // release_funds always runs fee collection, which needs a treasury even at 0 bps.
+    client.set_treasury(&Address::generate(&env));
 
     let mut obligations = Map::new(&env);
     obligations.set(p1.clone(), 6_000);
@@ -913,4 +918,203 @@ fn test_release_with_fee_distributes_net_amount_proportionally() {
     // funds left behind in the contract.
     assert_eq!(token_client.balance(&treasury), 1_000);
     assert_eq!(token_client.balance(&payee), 9_000);
+}
+// --- Emergency pause / 48-hour unfreeze timelock ---
+
+/// Creates a single-participant split of `amount` owed entirely by `participant`.
+fn create_simple_split(
+    env: &Env,
+    client: &SplitEscrowContractClient,
+    creator: &Address,
+    participant: &Address,
+    amount: i128,
+) -> u64 {
+    let mut obligations = Map::new(env);
+    obligations.set(participant.clone(), amount);
+
+    client.create_escrow(
+        creator,
+        &String::from_str(env, "Paused split"),
+        &amount,
+        &Map::new(env),
+        &obligations,
+        &None,
+        &false,
+        &None,
+        &None,
+    )
+}
+
+#[test]
+fn test_pause_blocks_deposit() {
+    let (env, client, admin, creator, participant, _token_client, _) = setup();
+    let split_id = create_simple_split(&env, &client, &creator, &participant, 1_000);
+
+    client.pause(&admin);
+    assert!(client.is_paused());
+
+    assert_eq!(
+        client.try_deposit(&split_id, &participant, &1_000),
+        Err(Ok(Error::ContractPaused))
+    );
+}
+
+#[test]
+fn test_pause_blocks_release_and_cancel() {
+    let (env, client, admin, creator, participant, _token_client, _) = setup();
+    client.set_treasury(&Address::generate(&env));
+    let split_id = create_simple_split(&env, &client, &creator, &participant, 1_000);
+
+    // Fully fund the split so it is Ready before the freeze kicks in.
+    client.deposit(&split_id, &participant, &1_000);
+    client.pause(&admin);
+
+    assert_eq!(
+        client.try_release_funds(&split_id),
+        Err(Ok(Error::ContractPaused))
+    );
+    assert_eq!(
+        client.try_cancel_split(&split_id),
+        Err(Ok(Error::ContractPaused))
+    );
+}
+
+#[test]
+fn test_pause_is_admin_only() {
+    let (env, client, _admin, creator, _participant, _token_client, _) = setup();
+
+    assert_eq!(client.try_pause(&creator), Err(Ok(Error::Unauthorized)));
+    assert!(!client.is_paused());
+
+    let _ = env;
+}
+
+#[test]
+fn test_pause_twice_fails() {
+    let (_env, client, admin, _creator, _participant, _token_client, _) = setup();
+
+    client.pause(&admin);
+    assert_eq!(client.try_pause(&admin), Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn test_unpause_before_timelock_fails() {
+    let (env, client, admin, _creator, _participant, _token_client, _) = setup();
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    client.pause(&admin);
+    client.schedule_unpause(&admin);
+    assert_eq!(client.get_unpause_scheduled_at(), Some(1_000 + 172_800));
+
+    // Immediately after scheduling.
+    assert_eq!(
+        client.try_unpause(&admin),
+        Err(Ok(Error::TimelockNotElapsed))
+    );
+
+    // One second short of the full 48 hours.
+    env.ledger().with_mut(|l| l.timestamp = 1_000 + 172_799);
+    assert_eq!(
+        client.try_unpause(&admin),
+        Err(Ok(Error::TimelockNotElapsed))
+    );
+    assert!(client.is_paused());
+}
+
+#[test]
+fn test_unpause_without_schedule_fails() {
+    let (_env, client, admin, _creator, _participant, _token_client, _) = setup();
+
+    client.pause(&admin);
+    assert_eq!(
+        client.try_unpause(&admin),
+        Err(Ok(Error::UnpauseNotScheduled))
+    );
+}
+
+#[test]
+fn test_schedule_unpause_when_not_paused_fails() {
+    let (_env, client, admin, _creator, _participant, _token_client, _) = setup();
+
+    assert_eq!(
+        client.try_schedule_unpause(&admin),
+        Err(Ok(Error::NotPaused))
+    );
+    assert_eq!(client.try_unpause(&admin), Err(Ok(Error::NotPaused)));
+}
+
+#[test]
+fn test_unpause_after_timelock_succeeds() {
+    let (env, client, admin, creator, participant, token_client, _) = setup();
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let split_id = create_simple_split(&env, &client, &creator, &participant, 1_000);
+
+    client.pause(&admin);
+    client.schedule_unpause(&admin);
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000 + 172_800);
+    client.unpause(&admin);
+
+    assert!(!client.is_paused());
+    assert_eq!(client.get_unpause_scheduled_at(), None);
+
+    // Deposits work again once the freeze is lifted.
+    client.deposit(&split_id, &participant, &1_000);
+    assert_eq!(client.get_escrow(&split_id).deposited_amount, 1_000);
+    assert_eq!(token_client.balance(&participant), 1_000_000 - 1_000);
+}
+
+#[test]
+fn test_repause_restarts_timelock() {
+    let (env, client, admin, _creator, _participant, _token_client, _) = setup();
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    client.pause(&admin);
+    client.schedule_unpause(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000 + 172_800);
+    client.unpause(&admin);
+
+    // A fresh pause must not inherit the elapsed schedule.
+    client.pause(&admin);
+    assert_eq!(client.get_unpause_scheduled_at(), None);
+    assert_eq!(
+        client.try_unpause(&admin),
+        Err(Ok(Error::UnpauseNotScheduled))
+    );
+}
+
+#[test]
+fn test_get_escrow_works_while_paused() {
+    let (env, client, admin, creator, participant, _token_client, _) = setup();
+    let split_id = create_simple_split(&env, &client, &creator, &participant, 1_000);
+    client.deposit(&split_id, &participant, &400);
+
+    client.pause(&admin);
+
+    let escrow = client.get_escrow(&split_id);
+    assert_eq!(escrow.split_id, split_id);
+    assert_eq!(escrow.deposited_amount, 400);
+    assert_eq!(escrow.status, SplitStatus::Pending);
+
+    // Other read-only entry points stay callable too.
+    assert_eq!(client.get_note(&split_id), String::from_str(&env, ""));
+    assert_eq!(client.get_creator(&split_id), creator);
+    assert_eq!(
+        client.get_participant_balance(&split_id, &participant).owed,
+        1_000
+    );
+}
+
+#[test]
+fn test_pause_events_emitted() {
+    let (env, client, admin, _creator, _participant, _token_client, _) = setup();
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    let before = env.events().all().len();
+    client.pause(&admin);
+    client.schedule_unpause(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000 + 172_800);
+    client.unpause(&admin);
+
+    assert_eq!(env.events().all().len(), before + 3);
 }

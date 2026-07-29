@@ -17,6 +17,8 @@ pub enum DataKey {
     FeeBps,
     Treasury,
     Version,
+    Paused,
+    UnpauseScheduledAt,
 }
 
 pub fn set_version(env: &Env, version: &String) {
@@ -125,4 +127,31 @@ pub fn set_treasury(env: &Env, treasury: &Address) {
 
 pub fn get_treasury(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::Treasury)
+}
+
+pub fn set_paused(env: &Env, paused: bool) {
+    env.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+pub fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+pub fn set_unpause_scheduled_at(env: &Env, timestamp: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::UnpauseScheduledAt, &timestamp);
+}
+
+pub fn get_unpause_scheduled_at(env: &Env) -> Option<u64> {
+    env.storage().instance().get(&DataKey::UnpauseScheduledAt)
+}
+
+pub fn clear_unpause_scheduled_at(env: &Env) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::UnpauseScheduledAt);
 }
