@@ -130,6 +130,7 @@ impl PathPaymentContract {
             }
         }
         if !found {
+            events::emit_path_not_found(&env, &source, &dest);
             return Err(Error::PathNotFound);
         }
         // Reconstruct path from dest to source
@@ -261,13 +262,8 @@ impl PathPaymentContract {
             Some(r) => r,
             None => {
                 let to_asset = path.get(1).unwrap();
-                events::emit_swap_failed(
-                    &env,
-                    &source_addr,
-                    &Symbol::new(&env, "router"),
-                    amount_in,
-                    &symbol_short!("swap_err"),
-                );
+                let to_addr = to_asset.address().clone();
+                events::emit_swap_failed(&env, &source_addr, &to_addr, amount_in, "router");
                 return Err(Error::MissingRouter);
             }
         };
@@ -298,9 +294,9 @@ impl PathPaymentContract {
                     events::emit_swap_failed(
                         &env,
                         &current_asset,
-                        &Symbol::new(&env, "output"),
+                        &to_addr,
                         current_amount,
-                        &symbol_short!("swap_err"),
+                        "output",
                     );
                     return Err(Error::SwapFailed);
                 }
@@ -308,9 +304,9 @@ impl PathPaymentContract {
                     events::emit_swap_failed(
                         &env,
                         &current_asset,
-                        &Symbol::new(&env, "invoke"),
+                        &to_addr,
                         current_amount,
-                        &symbol_short!("swap_err"),
+                        "invoke",
                     );
                     return Err(Error::SwapFailed);
                 }
