@@ -130,6 +130,8 @@ impl PathPaymentContract {
             }
         }
         if !found {
+            // Emit a no-path event for observability, then return
+            events::emit_path_not_found(&env, &source, &dest);
             return Err(Error::PathNotFound);
         }
         // Reconstruct path from dest to source
@@ -261,10 +263,11 @@ impl PathPaymentContract {
             Some(r) => r,
             None => {
                 let to_asset = path.get(1).unwrap();
+                let to_addr = to_asset.address().clone();
                 events::emit_swap_failed(
                     &env,
                     &source_addr,
-                    &to_asset.address().clone(),
+                    &to_addr,
                     amount_in,
                     "no_router_set",
                 );
