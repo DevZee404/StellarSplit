@@ -261,13 +261,13 @@ impl PathPaymentContract {
             Some(r) => r,
             None => {
                 let to_asset = path.get(1).unwrap();
-                events::emit_swap_failed(
-                    &env,
-                    &source_addr,
-                    &to_asset.address().clone(),
-                    amount_in,
-                    "no_router_set",
-                );
+                 events::emit_swap_failed(
+    &env,
+    &source_addr,
+    &Symbol::new(&env, "router"),
+    amount_in,
+    &symbol_short!("swap_err"),
+);
                 return Err(Error::MissingRouter);
             }
         };
@@ -296,22 +296,22 @@ impl PathPaymentContract {
                 }
                 Ok(_out) => {
                     events::emit_swap_failed(
-                        &env,
-                        &current_asset,
-                        &to_addr,
-                        current_amount,
-                        "zero_or_negative_output",
-                    );
+    &env,
+    &current_asset,
+    &Symbol::new(&env, "output"),
+    current_amount,
+    &symbol_short!("swap_err"),
+);
                     return Err(Error::SwapFailed);
                 }
                 Err(_) => {
                     events::emit_swap_failed(
-                        &env,
-                        &current_asset,
-                        &to_addr,
-                        current_amount,
-                        "invoke_error",
-                    );
+    &env,
+    &current_asset,
+    &Symbol::new(&env, "invoke"),
+    current_amount,
+    &symbol_short!("swap_err"),
+);
                     return Err(Error::SwapFailed);
                 }
             }
